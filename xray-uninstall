@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Exit immediately on error, undefined var, or pipeline failure
+set -euo pipefail
+
+# --- CHECK PERMISSIONS ---
+if [[ $EUID -ne 0 ]]; then
+   echo "Error: This script must be run as root." >&2
+   exit 1
+fi
+
+echo "[+] Stopping and disabling xray.service..."
+systemctl stop xray.service 2>/dev/null || true
+systemctl disable xray.service 2>/dev/null || true
+
+echo "[+] Removing systemd unit file..."
+rm -f /etc/systemd/system/xray.service
+systemctl daemon-reload
+
+echo "[+] Removing Xray configuration directory..."
+rm -rf /usr/local/etc/xray
+
+echo "[+] Removing user management script..."
+rm -f /usr/local/bin/xray-manager
+
+echo "[+] Removing help file..."
+rm -f "$HOME/xray-help"
+
+echo "[+] Running official Xray uninstaller to remove core files..."
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" --remove
+
+# Optional: purge helper packages (uncomment if you are sure)
+# echo "[+] Purging helper packages..."
+# apt remove --purge -y qrencode jq curl openssl unzip 2>/dev/null || true
+# apt autoremove -y 2>/dev/null || true
+
+echo "[✓] Xray and all related files have been removed."
