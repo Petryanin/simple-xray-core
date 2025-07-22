@@ -8,25 +8,17 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "[+] Stopping and disabling xray.service..."
-systemctl stop xray.service 2>/dev/null || true
-systemctl disable xray.service 2>/dev/null || true
+echo "[+] Running official Xray uninstaller to remove core files..."
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove
 
-echo "[+] Removing systemd unit file..."
-rm -f /etc/systemd/system/xray.service
-systemctl daemon-reload
+echo "[+] Removing help file..."
+rm -f "$HOME/xray-help"
 
 echo "[+] Removing Xray configuration directory..."
 rm -rf /usr/local/etc/xray
 
 echo "[+] Removing user management script..."
 rm -f /usr/local/bin/xray-manager
-
-echo "[+] Removing help file..."
-rm -f "$HOME/xray-help"
-
-echo "[+] Running official Xray uninstaller to remove core files..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove
 
 # Optional: purge helper packages (uncomment if you are sure)
 # echo "[+] Purging helper packages..."
