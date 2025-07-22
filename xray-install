@@ -159,7 +159,7 @@ echo "$ENDPOINT" > "$CONFIG_DIR/.endpoint"
 log_info "Endpoint is: $ENDPOINT"
 
 log_info "Installing user management script to /usr/local/bin/xray-manager..."
-cp xray-manager /usr/local/bin/xray-manager
+curl -sSL https://raw.githubusercontent.com/Petryanin/simple-xray-core/main/xray-manager -o /usr/local/bin/xray-manager
 chmod +x /usr/local/bin/xray-manager
 log_success "User management script installed."
 
