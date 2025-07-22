@@ -12,7 +12,7 @@ This repository provides a set of scripts to simplify the installation and manag
 To install Xray, run the following command. The script will prompt you to enter a domain (optional) and a label for your first user.
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Petryanin/simple-xray-core/main/xray-install | bash
+bash -c "$(curl -L https://raw.githubusercontent.com/Petryanin/simple-xray-core/main/xray-install)"
 ```
 
 ## User Management
@@ -56,7 +56,7 @@ A help file with these commands will also be created at `~/xray-help`.
 To completely remove Xray and all related files, use this command:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/Petryanin/simple-xray-core/main/xray-uninstall | bash
+bash -c "$(curl -L https://raw.githubusercontent.com/Petryanin/simple-xray-core/main/xray-uninstall)"
 ```
 
 ## Useful Links
