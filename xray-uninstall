@@ -26,7 +26,7 @@ echo "[+] Removing help file..."
 rm -f "$HOME/xray-help"
 
 echo "[+] Running official Xray uninstaller to remove core files..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" --remove
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove
 
 # Optional: purge helper packages (uncomment if you are sure)
 # echo "[+] Purging helper packages..."

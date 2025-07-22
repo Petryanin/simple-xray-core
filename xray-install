@@ -43,16 +43,9 @@ fi
 
 ### 3.  Install Xray-core via official installer -------------------------------
 echo "[+] Installing Xray-core..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)"
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 
-### 4.  Download geosite.dat and geoip.dat ------------------------------------
-echo "[+] Downloading geo data for routing..."
-DAT_DIR=/usr/local/share/xray
-mkdir -p "$DAT_DIR"
-curl -sL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o "$DAT_DIR/geoip.dat"
-curl -sL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -o "$DAT_DIR/geosite.dat"
-
-### 5.  Generate UUID, X25519 keys and shortId -------------------------------
+### 4.  Generate UUID, X25519 keys and shortId -------------------------------
 echo "[+] Generating keys and identifiers..."
 CONFIG_DIR=/usr/local/etc/xray
 mkdir -p "$CONFIG_DIR"
@@ -68,7 +61,7 @@ printf "uuid: %s\n%s\nshortsid: %s\n" \
 PRIV_KEY=$(awk -F': ' '/Private key/ {print $2}' "$KEYFILE")
 PUB_KEY=$(awk  -F': ' '/Public key/  {print $2}' "$KEYFILE")
 
-### 6.  Write Xray config.json ------------------------------------------------
+### 5.  Write Xray config.json ------------------------------------------------
 echo "[+] Writing Xray configuration..."
 cat > "$CONFIG_DIR/config.json" <<EOF
 {
@@ -114,7 +107,7 @@ cat > "$CONFIG_DIR/config.json" <<EOF
 }
 EOF
 
-### 7.  Create systemd service ------------------------------------------------
+### 6.  Create systemd service ------------------------------------------------
 echo "[+] Setting up systemd service..."
 SERVICE_FILE=/etc/systemd/system/xray.service
 cat > "$SERVICE_FILE" <<EOF
@@ -135,7 +128,7 @@ systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-### 8.  Determine endpoint and create manager script ---------------------------
+### 7.  Determine endpoint and create manager script ---------------------------
 if [[ -n "$DOMAIN" ]]; then
   ENDPOINT="$DOMAIN"
 else
@@ -319,7 +312,7 @@ EOF
 chmod +x /usr/local/bin/xray-manager
 
 
-### 9.  OPTIONAL: create ~/help cheat-sheet ####################################
+### 8.  OPTIONAL: create ~/help cheat-sheet ####################################
 cat > "$HOME/xray-help" <<'EOF'
 Xray user-management commands:
 
@@ -339,7 +332,7 @@ Restart Xray:
 EOF
 chmod 644 "$HOME/xray-help"
 
-### 10. Final banner ###########################################################
+### 9. Final banner ###########################################################
 echo -e "\n[✓] Installation complete. Use 'xray-manager' to manage users.\n"
 echo "Example commands:"
 echo "  xray-manager list"
