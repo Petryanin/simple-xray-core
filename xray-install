@@ -189,7 +189,7 @@ add_user() {
     if jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
       echo "Error: User label '$label' already exists." >&2
       exit 1
-    }
+    fi
     local uuid
     uuid=$(xray uuid)
     local tmp_file
@@ -210,7 +210,7 @@ remove_user() {
     if [[ ${#labels[@]} -eq 0 ]]; then
         echo "No users to delete."
         exit 0
-    }
+    fi
 
     echo "Select user to delete:"
     for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
@@ -219,7 +219,7 @@ remove_user() {
     if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
         echo "Error: Invalid selection." >&2
         exit 1
-    }
+    fi
 
     local label_to_remove="${labels[$((idx-1))]}"
     local tmp_file
@@ -241,7 +241,7 @@ share_link() {
         if ! jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
             echo "Error: User '$label' not found." >&2
             exit 1
-        }
+        fi
     else
         echo "Select user to share link:"
         for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
@@ -249,9 +249,9 @@ share_link() {
         if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
             echo "Error: Invalid selection." >&2
             exit 1
-        }
+        fi
         label="${labels[$((idx-1))]}"
-    }
+    fi
 
     local uuid
     uuid=$(jq -r --arg l "$label" '.inbounds[0].settings.clients[] | select(.label==$l).id' "$CONFIG_FILE")
