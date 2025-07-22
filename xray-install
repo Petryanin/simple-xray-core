@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# Exit immediately on error, undefined var, or pipeline failure
+set -euo pipefail
+
+# ------------------------------------------------------------------------------
+# Xray + VLESS + XTLS Reality install script
+# - Installs Xray via official one‑liner installer
+# - Enables BBR
+# - Downloads geosite/geoip
+# - Generates UUID, X25519 keys, shortId
+# - Writes config.json
+# - Sets up systemd service
+# - Provides a single helper command (xray-manager) for user management
+# - Prompts for your domain and falls back to VPS IP if left empty
+# ------------------------------------------------------------------------------
+
+### 0.  Prompt for user info --------------------------------------------------
+read -rp "Enter your domain (e.g. vpn.example.com), or leave empty to use VPS IP: " DOMAIN
+read -rp "Enter a label for the main user (e.g., 'my-phone'): " MAIN_USER_LABEL
+if [[ -z "$MAIN_USER_LABEL" ]]; then
+    echo "Error: The main user label cannot be empty." >&2
+    exit 1
+fi
+
+
+### 1.  Install basic packages ------------------------------------------------
+echo "[+] Installing required packages..."
+apt update
+apt install -y curl jq qrencode unzip openssl
+
+### 2.  Enable BBR congestion control if not already --------------------------
+echo "[+] Checking BBR..."
+if sysctl -n net.ipv4.tcp_congestion_control | grep -q bbr; then
+  echo "[+] BBR is already enabled"
+else
+  echo "[+] Enabling BBR..."
+  {
+    echo "net.core.default_qdisc=fq"
+    echo "net.ipv4.tcp_congestion_control=bbr"
+  } >> /etc/sysctl.conf
+  sysctl -p
+fi
+
+### 3.  Install Xray-core via official installer -------------------------------
+echo "[+] Installing Xray-core..."
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)"
+
+### 4.  Download geosite.dat and geoip.dat ------------------------------------
+echo "[+] Downloading geo data for routing..."
+DAT_DIR=/usr/local/share/xray
+mkdir -p "$DAT_DIR"
+curl -sL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat" -o "$DAT_DIR/geoip.dat"
+curl -sL "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -o "$DAT_DIR/geosite.dat"
+
+### 5.  Generate UUID, X25519 keys and shortId -------------------------------
+echo "[+] Generating keys and identifiers..."
+CONFIG_DIR=/usr/local/etc/xray
+mkdir -p "$CONFIG_DIR"
+KEYFILE="$CONFIG_DIR/.keys"
+
+UUID=$(xray uuid)
+X25519_OUT=$(xray x25519)
+SHORT_ID=$(openssl rand -hex 8)
+
+printf "uuid: %s\n%s\nshortsid: %s\n" \
+  "$UUID" "$X25519_OUT" "$SHORT_ID" > "$KEYFILE"
+
+PRIV_KEY=$(awk -F': ' '/Private key/ {print $2}' "$KEYFILE")
+PUB_KEY=$(awk  -F': ' '/Public key/  {print $2}' "$KEYFILE")
+
+### 6.  Write Xray config.json ------------------------------------------------
+echo "[+] Writing Xray configuration..."
+cat > "$CONFIG_DIR/config.json" <<EOF
+{
+  "log": { "loglevel": "warning" },
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" },
+      { "type": "field", "ip": ["geoip:cn"], "outboundTag": "block" }
+    ]
+  },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "$UUID", "label": "$MAIN_USER_LABEL", "flow": "xtls-rprx-vision" }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "github.com:443",
+          "xver": 0,
+          "serverNames": ["github.com","www.github.com"],
+          "privateKey": "$PRIV_KEY",
+          "shortIds": ["$SHORT_ID"]
+        }
+      },
+      "sniffing": { "enabled": true, "destOverride": ["http","tls"] }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom",  "tag": "direct" },
+    { "protocol": "blackhole","tag": "block"  }
+  ],
+  "policy": { "levels": { "0": { "handshake": 3, "connIdle": 180 } } }
+}
+EOF
+
+### 7.  Create systemd service ------------------------------------------------
+echo "[+] Setting up systemd service..."
+SERVICE_FILE=/etc/systemd/system/xray.service
+cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Xray Service
+After=network.target nss-lookup.target
+
+[Service]
+ExecStart=/usr/local/bin/xray run -config $CONFIG_DIR/config.json
+Restart=on-failure
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable xray
+systemctl restart xray
+
+### 8.  Determine endpoint and create manager script ---------------------------
+if [[ -n "$DOMAIN" ]]; then
+  ENDPOINT="$DOMAIN"
+else
+  echo "[+] No domain provided, fetching VPS IP..."
+  ENDPOINT=$(curl -4 -s ifconfig.me)
+fi
+echo "$ENDPOINT" > "$CONFIG_DIR/.endpoint"
+
+echo "[+] Creating user management script at /usr/local/bin/xray-manager..."
+cat > /usr/local/bin/xray-manager <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- CONFIGURATION ---
+CONFIG_DIR="/usr/local/etc/xray"
+KEYFILE="$CONFIG_DIR/.keys"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+ENDPOINT_FILE="$CONFIG_DIR/.endpoint"
+
+# --- VALIDATION ---
+if [[ ! -f "$ENDPOINT_FILE" ]]; then
+    echo "Error: Configuration is incomplete. Endpoint file not found." >&2
+    exit 1
+fi
+ENDPOINT=$(cat "$ENDPOINT_FILE")
+
+# --- FUNCTIONS ---
+
+get_main_link() {
+    local main_user_label
+    main_user_label=$(jq -r '.inbounds[0].settings.clients[0].label' "$CONFIG_FILE")
+    if [[ -z "$main_user_label" ]]; then
+        echo "Error: Could not find the main user." >&2
+        exit 1
+    fi
+    share_link "$main_user_label"
+}
+
+list_users() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    if [[ ${#labels[@]} -eq 0 ]]; then
+        echo "No users found."
+        exit 0
+    fi
+    printf "ID | Label\n"
+    printf -- "---|------\n"
+    for i in "${!labels[@]}"; do
+      printf "%2d) %s\n" $((i+1)) "${labels[$i]}"
+    done
+}
+
+add_user() {
+    read -rp "Enter new user label: " label
+    if [[ -z "$label" ]]; then
+        echo "Error: Empty label provided. Aborting." >&2
+        exit 1
+    fi
+    if jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
+      echo "Error: User label '$label' already exists." >&2
+      exit 1
+    }
+    local uuid
+    uuid=$(xray uuid)
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg l "$label" --arg u "$uuid" \
+       '.inbounds[0].settings.clients += [{"label":$l,"id":$u,"flow":"xtls-rprx-vision"}]' \
+       "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+    if systemctl restart xray; then
+        echo "User '$label' created successfully."
+        share_link "$label"
+    else
+        echo "Error: Failed to restart Xray service." >&2
+    fi
+}
+
+remove_user() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    if [[ ${#labels[@]} -eq 0 ]]; then
+        echo "No users to delete."
+        exit 0
+    }
+
+    echo "Select user to delete:"
+    for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
+    read -rp "Enter the number of the user: " idx
+
+    if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
+        echo "Error: Invalid selection." >&2
+        exit 1
+    }
+
+    local label_to_remove="${labels[$((idx-1))]}"
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg l "$label_to_remove" '(.inbounds[0].settings.clients) |= map(select(.label != $l))' \
+       "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+    if systemctl restart xray; then
+        echo "User '$label_to_remove' deleted successfully."
+    else
+        echo "Error: Failed to restart Xray service." >&2
+    fi
+}
+
+share_link() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    local label
+    if [[ -n "${1-}" ]]; then
+        label="$1"
+        if ! jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
+            echo "Error: User '$label' not found." >&2
+            exit 1
+        }
+    else
+        echo "Select user to share link:"
+        for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
+        read -rp "Enter the number of the user: " idx
+        if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
+            echo "Error: Invalid selection." >&2
+            exit 1
+        }
+        label="${labels[$((idx-1))]}"
+    }
+
+    local uuid
+    uuid=$(jq -r --arg l "$label" '.inbounds[0].settings.clients[] | select(.label==$l).id' "$CONFIG_FILE")
+    local proto
+    proto=$(jq -r '.inbounds[0].protocol' "$CONFIG_FILE")
+    local port
+    port=$(jq -r '.inbounds[0].port' "$CONFIG_FILE")
+    local pbk
+    pbk=$(awk -F': ' '/Public key/ {print $2}' "$KEYFILE")
+    local sid
+    sid=$(awk -F': ' '/shortsid/ {print $2}' "$KEYFILE")
+    local sni
+    sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+
+    local link="$proto://$uuid@$ENDPOINT:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$label"
+    printf "\nConnection link for %s:\n%s\n\n" "$label" "$link"
+    echo "QR code:"
+    echo "$link" | qrencode -t ansiutf8
+}
+
+# --- ARGUMENT PARSING ---
+COMMAND="${1-}"
+if [[ -n "${1-}" ]]; then
+    shift
+fi
+
+case "$COMMAND" in
+    mainlink)
+        get_main_link
+        ;;
+    list)
+        list_users
+        ;;
+    add)
+        add_user
+        ;;
+    remove)
+        remove_user
+        ;;
+    link)
+        share_link "${1-}"
+        ;;
+    *)
+        echo "Xray-Manager: A simple tool to manage Xray users."
+        echo ""
+        echo "Usage: xray-manager <command> [arguments]"
+        echo ""
+        echo "Commands:"
+        echo "  mainlink      Show the main user's connection link and QR code."
+        echo "  list          List all users."
+        echo "  add           Add a new user."
+        echo "  remove        Remove an existing user."
+        echo "  link [label]  Show connection link and QR code for a specific user."
+        exit 1
+        ;;
+esac
+EOF
+chmod +x /usr/local/bin/xray-manager
+
+
+### 9.  OPTIONAL: create ~/help cheat-sheet ####################################
+cat > "$HOME/xray-help" <<'EOF'
+Xray user-management commands:
+
+    xray-manager mainlink   – show main user link & QR
+    xray-manager list       – list every user
+    xray-manager add        – create a new user
+    xray-manager remove     – delete a user
+    xray-manager link [lbl] – choose user and print link / QR
+
+Config file:
+
+    /usr/local/etc/xray/config.json
+
+Restart Xray:
+
+    systemctl restart xray
+EOF
+chmod 644 "$HOME/xray-help"
+
+### 10. Final banner ###########################################################
+echo -e "\n[✓] Installation complete. Use 'xray-manager' to manage users.\n"
+echo "Example commands:"
+echo "  xray-manager list"
+echo "  xray-manager add"
+echo "  xray-manager mainlink"
+echo -e "\nShowing main user link now:\n"
+
+/usr/local/bin/xray-manager mainlink
