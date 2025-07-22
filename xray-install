@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exit immediately on error, undefined var, or pipeline failure
-set -euo pipefail
+set -eo pipefail
 
 # ------------------------------------------------------------------------------
 # Xray + VLESS + XTLS Reality install script
