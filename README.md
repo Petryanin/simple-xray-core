@@ -40,7 +40,7 @@ xray-manager remove
 **Get the connection link for a specific user:**
 
 ```sh
-xray-manager link
+xray-manager link [lable]
 ```
 
 **Get the link for the first (main) user:**
@@ -49,7 +49,11 @@ xray-manager link
 xray-manager mainlink
 ```
 
-A help file with these commands will also be created at `~/xray-help`.
+**Restart Xray service:**
+
+```sh
+xray-manager restart
+```
 
 ## Uninstallation
 
