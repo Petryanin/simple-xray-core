@@ -54,7 +54,7 @@ list_users() {
     printf "${C_BLUE}ID | Label${C_RESET}\n"
     printf -- "---|------\n"
     for i in "${!labels[@]}"; do
-      printf "%2d) %s\n" $((i+1)) "${labels[$i]}"
+      printf "%2d %s\n" $((i+1)) "${labels[$i]}"
     done
 }
 
