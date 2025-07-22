@@ -28,7 +28,7 @@ indent() {
 }
 
 # --- SCRIPT START -------------------------------------------------------------
-log_step "0. Prompt for user info"
+log_step "1. User info"
 read -rp "Enter your domain (e.g. vpn.example.com), or leave empty to use VPS IP: " DOMAIN < /dev/tty
 read -rp "Enter a label for the main user (e.g., 'my-phone'): " MAIN_USER_LABEL < /dev/tty
 if [[ -z "$MAIN_USER_LABEL" ]]; then
@@ -36,14 +36,14 @@ if [[ -z "$MAIN_USER_LABEL" ]]; then
 fi
 
 
-log_step "1. Install basic packages"
+log_step "2. Install basic packages"
 log_info "Updating package lists..."
 apt update | indent
 log_info "Installing required packages..."
 apt install -y curl jq qrencode unzip openssl | indent
 log_success "Basic packages installed."
 
-log_step "2. Enable BBR congestion control"
+log_step "3. Enable BBR congestion control"
 log_info "Checking BBR status..."
 if sysctl -n net.ipv4.tcp_congestion_control | grep -q bbr; then
   log_success "BBR is already enabled."
@@ -57,12 +57,12 @@ else
   log_success "BBR has been enabled."
 fi
 
-log_step "3. Install Xray-core via official installer"
+log_step "4. Install Xray-core via official installer"
 log_info "Running the official Xray installer..."
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install | indent
 log_success "Xray-core installed."
 
-log_step "4. Generate UUID, X25519 keys and shortId"
+log_step "5. Generate UUID, X25519 keys and shortId"
 log_info "Generating keys and identifiers..."
 CONFIG_DIR=/usr/local/etc/xray
 mkdir -p "$CONFIG_DIR"
@@ -79,7 +79,7 @@ PRIV_KEY=$(awk -F': ' '/Private key/ {print $2}' "$KEYFILE")
 PUB_KEY=$(awk  -F': ' '/Public key/  {print $2}'  "$KEYFILE")
 log_success "Keys and identifiers generated."
 
-log_step "5. Write Xray config.json"
+log_step "6. Write Xray config.json"
 log_info "Creating Xray configuration file..."
 cat > "$CONFIG_DIR/config.json" <<EOF
 {
@@ -126,7 +126,7 @@ cat > "$CONFIG_DIR/config.json" <<EOF
 EOF
 log_success "Xray configuration written to $CONFIG_DIR/config.json"
 
-log_step "6. Create systemd service"
+log_step "7. Create systemd service"
 log_info "Setting up systemd service..."
 SERVICE_FILE=/etc/systemd/system/xray.service
 cat > "$SERVICE_FILE" <<EOF
@@ -148,7 +148,7 @@ systemctl enable xray
 systemctl restart xray
 log_success "Xray service created and started."
 
-log_step "7. Determine endpoint and create manager script"
+log_step "8. Determine endpoint and create manager script"
 if [[ -n "$DOMAIN" ]]; then
   ENDPOINT="$DOMAIN"
 else
@@ -189,6 +189,15 @@ fi
 ENDPOINT=$(cat "$ENDPOINT_FILE")
 
 # --- FUNCTIONS ---
+
+restart_xray() {
+    printf "Restarting Xray service...\n"
+    if systemctl restart xray; then
+        printf "%bXray service restarted successfully.%b\n" "${C_GREEN}" "${C_RESET}"
+    else
+        log_error "Failed to restart Xray service."
+    fi
+}
 
 get_main_link() {
     local main_user_label
@@ -303,13 +312,14 @@ share_link() {
 COMMAND="${1-}"
 if [[ -n "${1-}" ]]; then
     shift
-fi
+}
 
 case "$COMMAND" in
     mainlink) get_main_link ;;
     list) list_users ;;
     add) add_user ;;
     remove) remove_user ;;
+    restart) restart_xray ;;
     link) share_link "${1-}" ;;
     *)
         printf "%bXray-Manager:%b A simple tool to manage Xray users.\n\n" "${C_BLUE}" "${C_RESET}"
@@ -319,7 +329,9 @@ case "$COMMAND" in
         printf "    list          List all users.\n"
         printf "    add           Add a new user.\n"
         printf "    remove        Remove an existing user.\n"
-        printf "    link [label]  Show connection link and QR code for a specific user.\n"
+        printf "    restart       Restart the Xray service.\n"
+        printf "    link [label]  Show connection link and QR code for a specific user.\n\n"
+        printf "  %bConfiguration file:%b %s\n" "${C_YELLOW}" "${C_RESET}" "$CONFIG_FILE"
         exit 1
         ;;
 esac
@@ -327,34 +339,23 @@ EOF
 chmod +x /usr/local/bin/xray-manager
 log_success "User management script created."
 
+log_step "9. Finalizing"
+log_success "Installation complete!"
 
-log_step "8. Create help cheat-sheet"
-cat > "$HOME/xray-help" <<'EOF'
-Xray user-management commands:
+printf "\n%b--- Cheat Sheet ---%b\n"
+printf "${C_YELLOW}To manage users, use the command:%b xray-manager\n"
+printf "${C_YELLOW}Available commands:%b\n"
+printf "  xray-manager mainlink   – Show main user link & QR\n"
+printf "  xray-manager list       – List all users\n"
+printf "  xray-manager add        – Create a new user\n"
+printf "  xray-manager remove     – Delete a user\n"
+printf "  xray-manager restart    – Restart the Xray service\n"
+printf "  xray-manager link [lbl] – Show link/QR for a specific user\n\n"
+printf "${C_YELLOW}Config file location:%b /usr/local/etc/xray/config.json\n"
+printf "${C_YELLOW}To restart Xray manually:%b systemctl restart xray\n"
+printf "%b-------------------%b\n"
 
-    xray-manager mainlink   – show main user link & QR
-    xray-manager list       – list every user
-    xray-manager add        – create a new user
-    xray-manager remove     – delete a user
-    xray-manager link [lbl] – choose user and print link / QR
 
-Config file:
-
-    /usr/local/etc/xray/config.json
-
-Restart Xray:
-
-    systemctl restart xray
-EOF
-chmod 644 "$HOME/xray-help"
-log_success "Help file created at ~/xray-help"
-
-log_step "9. Final banner"
-log_success "Installation complete. Use 'xray-manager' to manage users."
-echo "Example commands:"
-echo "  xray-manager list"
-echo "  xray-manager add"
-echo "  xray-manager mainlink"
-echo -e "\nShowing main user link now:\n"
+echo -e "\nShowing main user link now:"
 
 /usr/local/bin/xray-manager mainlink
