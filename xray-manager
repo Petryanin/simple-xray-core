@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- CONFIGURATION AND COLORS ---
+CONFIG_DIR="/usr/local/etc/xray"
+KEYFILE="$CONFIG_DIR/.keys"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+ENDPOINT_FILE="$CONFIG_DIR/.endpoint"
+
+C_BLUE='\033[1;34m'
+C_GREEN='\033[1;32m'
+C_YELLOW='\033[1;33m'
+C_RED='\033[1;31m'
+C_RESET='\033[0m'
+
+# --- HELPERS ---
+log_error() {
+  printf "%b[✗] %s%b\n" "${C_RED}" "$1" "${C_RESET}" >&2
+  exit 1
+}
+
+# --- VALIDATION ---
+if [[ ! -f "$ENDPOINT_FILE" ]]; then
+    log_error "Configuration is incomplete. Endpoint file not found."
+fi
+ENDPOINT=$(cat "$ENDPOINT_FILE")
+
+# --- FUNCTIONS ---
+
+restart_xray() {
+    printf "Restarting Xray service...\n"
+    if systemctl restart xray; then
+        printf "%bXray service restarted successfully.%b\n" "${C_GREEN}" "${C_RESET}"
+    else
+        log_error "Failed to restart Xray service."
+    fi
+}
+
+get_main_link() {
+    local main_user_label
+    main_user_label=$(jq -r '.inbounds[0].settings.clients[0].label' "$CONFIG_FILE")
+    if [[ -z "$main_user_label" ]]; then
+        log_error "Could not find the main user."
+    fi
+    share_link "$main_user_label"
+}
+
+list_users() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    if [[ ${#labels[@]} -eq 0 ]]; then
+        echo "No users found."
+        exit 0
+    fi
+    printf "${C_BLUE}ID | Label${C_RESET}\n"
+    printf -- "---|------\n"
+    for i in "${!labels[@]}"; do
+      printf "%2d) %s\n" $((i+1)) "${labels[$i]}"
+    done
+}
+
+add_user() {
+    read -rp "Enter new user label: " label < /dev/tty
+    if [[ -z "$label" ]]; then
+        log_error "Empty label provided. Aborting."
+    fi
+    if jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
+      log_error "User label '$label' already exists."
+    fi
+    local uuid
+    uuid=$(xray uuid)
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg l "$label" --arg u "$uuid" \
+       '.inbounds[0].settings.clients += [{"label":$l,"id":$u,"flow":"xtls-rprx-vision"}]' \
+       "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+    if systemctl restart xray; then
+        printf "\n%bUser '%s' created successfully.%b\n" "${C_GREEN}" "$label" "${C_RESET}"
+        share_link "$label"
+    else
+        log_error "Failed to restart Xray service."
+    fi
+}
+
+remove_user() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    if [[ ${#labels[@]} -eq 0 ]]; then
+        echo "No users to delete."
+        exit 0
+    fi
+
+    echo "Select user to delete:"
+    for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
+    read -rp "Enter the number of the user: " idx < /dev/tty
+
+    if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
+        log_error "Invalid selection."
+    fi
+
+    local label_to_remove="${labels[$((idx-1))]}"
+    local tmp_file
+    tmp_file=$(mktemp)
+    jq --arg l "$label_to_remove" '(.inbounds[0].settings.clients) |= map(select(.label != $l))' \
+       "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
+    if systemctl restart xray; then
+        printf "%bUser '%s' deleted successfully.%b\n" "${C_GREEN}" "$label_to_remove" "${C_RESET}"
+    else
+        log_error "Failed to restart Xray service."
+    fi
+}
+
+share_link() {
+    mapfile -t labels < <(jq -r '.inbounds[0].settings.clients[].label' "$CONFIG_FILE")
+    local label
+    if [[ -n "${1-}" ]]; then
+        label="$1"
+        if ! jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
+            log_error "User '$label' not found."
+        fi
+    else
+        echo "Select user to share link:"
+        for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
+        read -rp "Enter the number of the user: " idx < /dev/tty
+        if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
+            log_error "Invalid selection."
+        fi
+        label="${labels[$((idx-1))]}"
+    fi
+
+    local uuid
+    uuid=$(jq -r --arg l "$label" '.inbounds[0].settings.clients[] | select(.label==$l).id' "$CONFIG_FILE")
+    local proto
+    proto=$(jq -r '.inbounds[0].protocol' "$CONFIG_FILE")
+    local port
+    port=$(jq -r '.inbounds[0].port' "$CONFIG_FILE")
+    local pbk
+    pbk=$(awk -F': ' '/Public key/ {print $2}' "$KEYFILE")
+    local sid
+    sid=$(awk -F': ' '/shortsid/ {print $2}' "$KEYFILE")
+    local sni
+    sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
+
+    local link="$proto://$uuid@$ENDPOINT:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$label"
+    printf "\n${C_YELLOW}Connection link for %s:${C_RESET}\n%s\n\n" "$label" "$link"
+    printf "${C_YELLOW}QR code:${C_RESET}\n"
+    echo "$link" | qrencode -t ansiutf8
+}
+
+# --- ARGUMENT PARSING ---
+COMMAND="${1-}"
+if [[ -n "${1-}" ]]; then
+    shift
+fi
+
+case "$COMMAND" in
+    mainlink) get_main_link ;;
+    list) list_users ;;
+    add) add_user ;;
+    remove) remove_user ;;
+    restart) restart_xray ;;
+    link) share_link "${1-}" ;;
+    *)
+        printf "%bXray-Manager:%b A simple tool to manage Xray users.\n\n" "${C_BLUE}" "${C_RESET}"
+        printf "  %bUsage:%b xray-manager <command> [arguments]\n\n" "${C_YELLOW}" "${C_RESET}"
+        printf "  %bCommands:%b\n" "${C_YELLOW}" "${C_RESET}"
+        printf "    mainlink      Show the main user\'s connection link and QR code.\n"
+        printf "    list          List all users.\n"
+        printf "    add           Add a new user.\n"
+        printf "    remove        Remove an existing user.\n"
+        printf "    restart       Restart the Xray service.\n"
+        printf "    link [label]  Show connection link and QR code for a specific user.\n\n"
+        printf "  %bConfiguration file:%b %s\n" "${C_YELLOW}" "${C_RESET}" "$CONFIG_FILE"
+        exit 1
+        ;;
+esac
