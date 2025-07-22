@@ -2,51 +2,68 @@
 # Exit immediately on error, undefined var, or pipeline failure
 set -eo pipefail
 
-# ------------------------------------------------------------------------------
-# Xray + VLESS + XTLS Reality install script
-# - Installs Xray via official one‑liner installer
-# - Enables BBR
-# - Downloads geosite/geoip
-# - Generates UUID, X25519 keys, shortId
-# - Writes config.json
-# - Sets up systemd service
-# - Provides a single helper command (xray-manager) for user management
-# - Prompts for your domain and falls back to VPS IP if left empty
-# ------------------------------------------------------------------------------
+# --- COLORS AND HELPERS ------------------------------------------------------
+C_BLUE='\033[1;34m'
+C_GREEN='\033[1;32m'
+C_YELLOW='\033[1;33m'
+C_RED='\033[1;31m'
+C_RESET='\033[0m'
 
-### 0.  Prompt for user info --------------------------------------------------
-read -rp "Enter your domain (e.g. vpn.example.com), or leave empty to use VPS IP: " DOMAIN
-read -rp "Enter a label for the main user (e.g., 'my-phone'): " MAIN_USER_LABEL
+# Helpers for logging
+log_step() {
+  printf "\n%b%s%b\n" "${C_BLUE}" "### $1" "${C_RESET}"
+}
+log_info() {
+  printf "%b[+] %s%b\n" "${C_YELLOW}" "$1" "${C_RESET}"
+}
+log_success() {
+  printf "%b[✓] %s%b\n" "${C_GREEN}" "$1" "${C_RESET}"
+}
+log_error() {
+  printf "%b[✗] %s%b\n" "${C_RED}" "$1" "${C_RESET}" >&2
+  exit 1
+}
+indent() {
+  sed 's/^/    /'
+}
+
+# --- SCRIPT START -------------------------------------------------------------
+log_step "0. Prompt for user info"
+read -rp "Enter your domain (e.g. vpn.example.com), or leave empty to use VPS IP: " DOMAIN < /dev/tty
+read -rp "Enter a label for the main user (e.g., 'my-phone'): " MAIN_USER_LABEL < /dev/tty
 if [[ -z "$MAIN_USER_LABEL" ]]; then
-    echo "Error: The main user label cannot be empty." >&2
-    exit 1
+    log_error "The main user label cannot be empty."
 fi
 
 
-### 1.  Install basic packages ------------------------------------------------
-echo "[+] Installing required packages..."
-apt update
-apt install -y curl jq qrencode unzip openssl
+log_step "1. Install basic packages"
+log_info "Updating package lists..."
+apt update | indent
+log_info "Installing required packages..."
+apt install -y curl jq qrencode unzip openssl | indent
+log_success "Basic packages installed."
 
-### 2.  Enable BBR congestion control if not already --------------------------
-echo "[+] Checking BBR..."
+log_step "2. Enable BBR congestion control"
+log_info "Checking BBR status..."
 if sysctl -n net.ipv4.tcp_congestion_control | grep -q bbr; then
-  echo "[+] BBR is already enabled"
+  log_success "BBR is already enabled."
 else
-  echo "[+] Enabling BBR..."
+  log_info "Enabling BBR..."
   {
     echo "net.core.default_qdisc=fq"
     echo "net.ipv4.tcp_congestion_control=bbr"
   } >> /etc/sysctl.conf
-  sysctl -p
+  sysctl -p | indent
+  log_success "BBR has been enabled."
 fi
 
-### 3.  Install Xray-core via official installer -------------------------------
-echo "[+] Installing Xray-core..."
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+log_step "3. Install Xray-core via official installer"
+log_info "Running the official Xray installer..."
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install | indent
+log_success "Xray-core installed."
 
-### 4.  Generate UUID, X25519 keys and shortId -------------------------------
-echo "[+] Generating keys and identifiers..."
+log_step "4. Generate UUID, X25519 keys and shortId"
+log_info "Generating keys and identifiers..."
 CONFIG_DIR=/usr/local/etc/xray
 mkdir -p "$CONFIG_DIR"
 KEYFILE="$CONFIG_DIR/.keys"
@@ -59,10 +76,11 @@ printf "uuid: %s\n%s\nshortsid: %s\n" \
   "$UUID" "$X25519_OUT" "$SHORT_ID" > "$KEYFILE"
 
 PRIV_KEY=$(awk -F': ' '/Private key/ {print $2}' "$KEYFILE")
-PUB_KEY=$(awk  -F': ' '/Public key/  {print $2}' "$KEYFILE")
+PUB_KEY=$(awk  -F': ' '/Public key/  {print $2}'  "$KEYFILE")
+log_success "Keys and identifiers generated."
 
-### 5.  Write Xray config.json ------------------------------------------------
-echo "[+] Writing Xray configuration..."
+log_step "5. Write Xray config.json"
+log_info "Creating Xray configuration file..."
 cat > "$CONFIG_DIR/config.json" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -106,9 +124,10 @@ cat > "$CONFIG_DIR/config.json" <<EOF
   "policy": { "levels": { "0": { "handshake": 3, "connIdle": 180 } } }
 }
 EOF
+log_success "Xray configuration written to $CONFIG_DIR/config.json"
 
-### 6.  Create systemd service ------------------------------------------------
-echo "[+] Setting up systemd service..."
+log_step "6. Create systemd service"
+log_info "Setting up systemd service..."
 SERVICE_FILE=/etc/systemd/system/xray.service
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -127,31 +146,45 @@ EOF
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
+log_success "Xray service created and started."
 
-### 7.  Determine endpoint and create manager script ---------------------------
+log_step "7. Determine endpoint and create manager script"
 if [[ -n "$DOMAIN" ]]; then
   ENDPOINT="$DOMAIN"
 else
-  echo "[+] No domain provided, fetching VPS IP..."
+  log_info "No domain provided, fetching VPS IP..."
   ENDPOINT=$(curl -4 -s ifconfig.me)
 fi
 echo "$ENDPOINT" > "$CONFIG_DIR/.endpoint"
+log_info "Endpoint is: $ENDPOINT"
 
-echo "[+] Creating user management script at /usr/local/bin/xray-manager..."
+log_info "Creating user management script at /usr/local/bin/xray-manager..."
+# Note the escaped backslashes for colors in the heredoc
 cat > /usr/local/bin/xray-manager <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION AND COLORS ---
 CONFIG_DIR="/usr/local/etc/xray"
 KEYFILE="$CONFIG_DIR/.keys"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 ENDPOINT_FILE="$CONFIG_DIR/.endpoint"
 
+C_BLUE='\033[1;34m'
+C_GREEN='\033[1;32m'
+C_YELLOW='\033[1;33m'
+C_RED='\033[1;31m'
+C_RESET='\033[0m'
+
+# --- HELPERS ---
+log_error() {
+  printf "%b[✗] %s%b\n" "${C_RED}" "$1" "${C_RESET}" >&2
+  exit 1
+}
+
 # --- VALIDATION ---
 if [[ ! -f "$ENDPOINT_FILE" ]]; then
-    echo "Error: Configuration is incomplete. Endpoint file not found." >&2
-    exit 1
+    log_error "Configuration is incomplete. Endpoint file not found."
 fi
 ENDPOINT=$(cat "$ENDPOINT_FILE")
 
@@ -161,9 +194,8 @@ get_main_link() {
     local main_user_label
     main_user_label=$(jq -r '.inbounds[0].settings.clients[0].label' "$CONFIG_FILE")
     if [[ -z "$main_user_label" ]]; then
-        echo "Error: Could not find the main user." >&2
-        exit 1
-    fi
+        log_error "Could not find the main user."
+    }
     share_link "$main_user_label"
 }
 
@@ -172,8 +204,8 @@ list_users() {
     if [[ ${#labels[@]} -eq 0 ]]; then
         echo "No users found."
         exit 0
-    fi
-    printf "ID | Label\n"
+    }
+    printf "${C_BLUE}ID | Label${C_RESET}\n"
     printf -- "---|------\n"
     for i in "${!labels[@]}"; do
       printf "%2d) %s\n" $((i+1)) "${labels[$i]}"
@@ -181,15 +213,13 @@ list_users() {
 }
 
 add_user() {
-    read -rp "Enter new user label: " label
+    read -rp "Enter new user label: " label < /dev/tty
     if [[ -z "$label" ]]; then
-        echo "Error: Empty label provided. Aborting." >&2
-        exit 1
-    fi
+        log_error "Empty label provided. Aborting."
+    }
     if jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
-      echo "Error: User label '$label' already exists." >&2
-      exit 1
-    fi
+      log_error "User label '$label' already exists."
+    }
     local uuid
     uuid=$(xray uuid)
     local tmp_file
@@ -198,11 +228,11 @@ add_user() {
        '.inbounds[0].settings.clients += [{"label":$l,"id":$u,"flow":"xtls-rprx-vision"}]' \
        "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
     if systemctl restart xray; then
-        echo "User '$label' created successfully."
+        printf "\n%bUser '%s' created successfully.%b\n" "${C_GREEN}" "$label" "${C_RESET}"
         share_link "$label"
     else
-        echo "Error: Failed to restart Xray service." >&2
-    fi
+        log_error "Failed to restart Xray service."
+    }
 }
 
 remove_user() {
@@ -210,16 +240,15 @@ remove_user() {
     if [[ ${#labels[@]} -eq 0 ]]; then
         echo "No users to delete."
         exit 0
-    fi
+    }
 
     echo "Select user to delete:"
     for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
-    read -rp "Enter the number of the user: " idx
+    read -rp "Enter the number of the user: " idx < /dev/tty
 
     if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
-        echo "Error: Invalid selection." >&2
-        exit 1
-    fi
+        log_error "Invalid selection."
+    }
 
     local label_to_remove="${labels[$((idx-1))]}"
     local tmp_file
@@ -227,10 +256,10 @@ remove_user() {
     jq --arg l "$label_to_remove" '(.inbounds[0].settings.clients) |= map(select(.label != $l))' \
        "$CONFIG_FILE" > "$tmp_file" && mv "$tmp_file" "$CONFIG_FILE"
     if systemctl restart xray; then
-        echo "User '$label_to_remove' deleted successfully."
+        printf "%bUser '%s' deleted successfully.%b\n" "${C_GREEN}" "$label_to_remove" "${C_RESET}"
     else
-        echo "Error: Failed to restart Xray service." >&2
-    fi
+        log_error "Failed to restart Xray service."
+    }
 }
 
 share_link() {
@@ -239,19 +268,17 @@ share_link() {
     if [[ -n "${1-}" ]]; then
         label="$1"
         if ! jq -e --arg l "$label" '.inbounds[0].settings.clients[] | select(.label == $l)' "$CONFIG_FILE" >/dev/null; then
-            echo "Error: User '$label' not found." >&2
-            exit 1
-        fi
+            log_error "User '$label' not found."
+        }
     else
         echo "Select user to share link:"
         for i in "${!labels[@]}"; do printf "%2d) %s\n" $((i+1)) "${labels[$i]}"; done
-        read -rp "Enter the number of the user: " idx
+        read -rp "Enter the number of the user: " idx < /dev/tty
         if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#labels[@]} )); then
-            echo "Error: Invalid selection." >&2
-            exit 1
-        fi
+            log_error "Invalid selection."
+        }
         label="${labels[$((idx-1))]}"
-    fi
+    }
 
     local uuid
     uuid=$(jq -r --arg l "$label" '.inbounds[0].settings.clients[] | select(.label==$l).id' "$CONFIG_FILE")
@@ -267,8 +294,8 @@ share_link() {
     sni=$(jq -r '.inbounds[0].streamSettings.realitySettings.serverNames[0]' "$CONFIG_FILE")
 
     local link="$proto://$uuid@$ENDPOINT:$port?security=reality&sni=$sni&fp=firefox&pbk=$pbk&sid=$sid&spx=/&type=tcp&flow=xtls-rprx-vision&encryption=none#$label"
-    printf "\nConnection link for %s:\n%s\n\n" "$label" "$link"
-    echo "QR code:"
+    printf "\n${C_YELLOW}Connection link for %s:${C_RESET}\n%s\n\n" "$label" "$link"
+    printf "${C_YELLOW}QR code:${C_RESET}\n"
     echo "$link" | qrencode -t ansiutf8
 }
 
@@ -279,40 +306,29 @@ if [[ -n "${1-}" ]]; then
 fi
 
 case "$COMMAND" in
-    mainlink)
-        get_main_link
-        ;;
-    list)
-        list_users
-        ;;
-    add)
-        add_user
-        ;;
-    remove)
-        remove_user
-        ;;
-    link)
-        share_link "${1-}"
-        ;;
+    mainlink) get_main_link ;;
+    list) list_users ;;
+    add) add_user ;;
+    remove) remove_user ;;
+    link) share_link "${1-}" ;;
     *)
-        echo "Xray-Manager: A simple tool to manage Xray users."
-        echo ""
-        echo "Usage: xray-manager <command> [arguments]"
-        echo ""
-        echo "Commands:"
-        echo "  mainlink      Show the main user's connection link and QR code."
-        echo "  list          List all users."
-        echo "  add           Add a new user."
-        echo "  remove        Remove an existing user."
-        echo "  link [label]  Show connection link and QR code for a specific user."
+        printf "%bXray-Manager:%b A simple tool to manage Xray users.\n\n" "${C_BLUE}" "${C_RESET}"
+        printf "  %bUsage:%b xray-manager <command> [arguments]\n\n" "${C_YELLOW}" "${C_RESET}"
+        printf "  %bCommands:%b\n" "${C_YELLOW}" "${C_RESET}"
+        printf "    mainlink      Show the main user\'s connection link and QR code.\n"
+        printf "    list          List all users.\n"
+        printf "    add           Add a new user.\n"
+        printf "    remove        Remove an existing user.\n"
+        printf "    link [label]  Show connection link and QR code for a specific user.\n"
         exit 1
         ;;
 esac
 EOF
 chmod +x /usr/local/bin/xray-manager
+log_success "User management script created."
 
 
-### 8.  OPTIONAL: create ~/help cheat-sheet ####################################
+log_step "8. Create help cheat-sheet"
 cat > "$HOME/xray-help" <<'EOF'
 Xray user-management commands:
 
@@ -331,9 +347,10 @@ Restart Xray:
     systemctl restart xray
 EOF
 chmod 644 "$HOME/xray-help"
+log_success "Help file created at ~/xray-help"
 
-### 9. Final banner ###########################################################
-echo -e "\n[✓] Installation complete. Use 'xray-manager' to manage users.\n"
+log_step "9. Final banner"
+log_success "Installation complete. Use 'xray-manager' to manage users."
 echo "Example commands:"
 echo "  xray-manager list"
 echo "  xray-manager add"
