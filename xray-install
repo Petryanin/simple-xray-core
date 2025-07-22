@@ -87,8 +87,7 @@ cat > "$CONFIG_DIR/config.json" <<EOF
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
-      { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" },
-      { "type": "field", "ip": ["geoip:cn"], "outboundTag": "block" }
+      { "type": "field", "domain": ["geosite:category-ads-all"], "outboundTag": "block" }
     ]
   },
   "inbounds": [
@@ -169,7 +168,7 @@ log_success "Installation complete!"
 printf "\n%b--- Cheat Sheet ---%b\n"
 printf "To manage users, use the command: %bxray-manager%b\n" "${C_YELLOW}" "${C_RESET}"
 printf "%bXray-Manager:%b A simple tool to manage Xray users.\n\n" "${C_BLUE}" "${C_RESET}"
-printf "  %bUsage:%b xray-manager <command> [arguments]\n\n" "${C_YELLOW}" "${C_RESET}"
+printf "  %bUsage:%b xray-manager <command> [arguments>\n\n" "${C_YELLOW}" "${C_RESET}"
 printf "  %bCommands:%b\n" "${C_YELLOW}" "${C_RESET}"
 printf "    mainlink      Show the main user\'s connection link and QR code.\n"
 printf "    list          List all users.\n"
